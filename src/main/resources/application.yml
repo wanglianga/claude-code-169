@@ -1,0 +1,88 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: garbage-room-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:garbage}
+    username: ${DB_USER:garbage}
+    password: ${DB_PASSWORD:garbage}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: Asia/Shanghai
+        format_sql: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+    consumer:
+      group-id: garbage-room-linkage
+      auto-offset-reset: latest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.city.garbage.event"
+    listener:
+      missing-topics-fatal: false
+
+app:
+  kafka:
+    enabled: ${KAFKA_ENABLED:true}
+  linkage:
+    night-start: 20            # 夜间投放高峰：20:00 - 次日 06:00
+    night-end: 6
+    night-disposal-threshold: 3
+    offline-minutes: 10        # 设备超过该时长未上报心跳视为断网
+    bin-full-threshold: 90     # 容量百分比 >= 90 视为满
+    odor-threshold: 70         # 异味值 >= 70 视为异味告警
+    points-per-kg: 10          # 正确投放每公斤积分
+    wrong-sort-deduction: 5    # 错投扣减积分（不低于0）
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+---
+# 本地/测试 profile：H2 内存库 + 内嵌事件总线（不依赖外部 Kafka）
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:h2:mem:garbage;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+  kafka:
+    admin:
+      auto-create: false
+    consumer:
+      auto-offset-reset: earliest
+
+app:
+  kafka:
+    enabled: false
+  watchdog:
+    enabled: false
+    fixed-delay-ms: 3600000
