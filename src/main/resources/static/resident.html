@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>居民端 · 垃圾分类投放</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main>
+  <div class="grid cols-3" id="statCards"></div>
+
+  <div class="grid cols-2" style="margin-top:16px">
+    <div class="card">
+      <h2>🪣 刷卡 / 扫码投放</h2>
+      <form id="disposeForm">
+        <label class="fld">垃圾房
+          <select id="roomCode"></select>
+        </label>
+        <label class="fld">投放方式
+          <select id="accessMethod">
+            <option value="CARD">刷卡</option>
+            <option value="QRCODE">扫码</option>
+          </select>
+        </label>
+        <label class="fld">垃圾类型
+          <select id="wasteType">
+            <option value="KITCHEN">厨余垃圾（20 积分/kg）</option>
+            <option value="RECYCLABLE">可回收物（10 积分/kg）</option>
+            <option value="OTHER">其他垃圾</option>
+            <option value="HAZARDOUS">有害垃圾</option>
+          </select>
+        </label>
+        <label class="fld">重量 (kg)
+          <input id="weightKg" type="number" step="0.01" min="0.01" value="1.2">
+        </label>
+        <label class="fld">摄像头识别结论（模拟设备 AI）
+          <select id="aiVerdict">
+            <option value="CORRECT">识别正确</option>
+            <option value="MIS_SORT">识别为错投</option>
+            <option value="SUSPECTED">疑似混投</option>
+            <option value="UNKNOWN">无法判定</option>
+          </select>
+        </label>
+        <label class="fld" style="display:flex;align-items:center;gap:8px;color:var(--text)">
+          <input id="creditDelayed" type="checkbox" style="width:auto"> 模拟设备断网 / 积分链路延迟（积分暂不到账，系统巡检补发）
+        </label>
+        <button class="btn" type="submit">确认投放</button>
+      </form>
+      <div id="disposeResult"></div>
+    </div>
+
+    <div class="card">
+      <h2>📣 我要投诉</h2>
+      <form id="complaintForm">
+        <label class="fld">垃圾房
+          <select id="cRoomCode"></select>
+        </label>
+        <label class="fld">投诉类型
+          <select id="complaintType">
+            <option value="ODOR">异味投诉</option>
+            <option value="HYGIENE">卫生问题</option>
+            <option value="OVERFLOW">满溢扰民</option>
+            <option value="NOISE">夜间噪音</option>
+            <option value="OTHER">其他投诉</option>
+          </select>
+        </label>
+        <label class="fld">投诉内容
+          <textarea id="complaintContent" rows="3" placeholder="如：1号垃圾房晚高峰厨余桶异味严重，污水外溢"></textarea>
+        </label>
+        <button class="btn warn" type="submit">提交投诉（异味将自动联动消杀）</button>
+      </form>
+      <h3>我的投诉处理结果</h3>
+      <div style="overflow-x:auto"><table id="complaintTable"></table></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>🧾 我的投放记录与违规提示</h2>
+    <div style="overflow-x:auto"><table id="disposalTable"></table></div>
+  </div>
+
+  <div class="grid cols-2" style="margin-top:16px">
+    <div class="card">
+      <h2>💰 积分流水</h2>
+      <div style="overflow-x:auto"><table id="ledgerTable"></table></div>
+    </div>
+    <div class="card">
+      <h2>⚖️ 整改 / 申诉结果</h2>
+      <div style="overflow-x:auto"><table id="rectTable"></table></div>
+    </div>
+  </div>
+</main>
+
+<script src="/common.js"></script>
+<script>
+const session = requireRole('RESIDENT');
+mountTopbar('居民端 · 智能分类投放');
+
+async function loadRooms() {
+  const rooms = await api('/meta/rooms');
+  const opts = rooms.map(r => `<option value="${r.code}">${r.code} ${esc(r.name)}（${esc(r.communityName)}）</option>`).join('');
+  document.getElementById('roomCode').innerHTML = opts;
+  document.getElementById('cRoomCode').innerHTML = opts;
+}
+
+async function loadMe() {
+  const me = await api('/resident/me');
+  document.getElementById('statCards').innerHTML = `
+    <div class="card stat"><span class="num">${me.pointsBalance}</span><span class="lbl">积分余额</span></div>
+    <div class="card stat"><span class="num">${esc(me.communityName)} · ${esc(me.buildingName)}</span><span class="lbl">${esc(me.name)}（${esc(me.cardNo)}）</span></div>
+    <div class="card stat"><span class="num" id="undoneCount">…</span><span class="lbl">待处理违规 / 投诉事项</span></div>`;
+}
+
+async function loadDisposals() {
+  const list = await api('/resident/disposals');
+  document.getElementById('disposalTable').innerHTML = `
+    <tr><th>单号/时间</th><th>垃圾房</th><th>类型/重量</th><th>AI识别</th><th>积分</th><th>违规提示</th><th>操作</th></tr>
+    ${list.map(d => `
+      <tr>
+        <td><code class="bizno">${esc(d.bizNo)}</code><br><span class="muted">${fmt(d.createdAt)}</span></td>
+        <td>${esc(d.roomCode)}<br><span class="muted">${esc(d.accessMethodLabel)}</span></td>
+        <td>${esc(d.wasteTypeLabel)}<br>${d.weightKg} kg</td>
+        <td><span class="tag ${d.aiVerdict}">${esc(d.aiVerdictLabel)}</span></td>
+        <td>基础 ${d.basePoints} 分${d.penaltyPoints ? `<br><span style="color:var(--danger)">违规 -${d.penaltyPoints}</span>` : ''}
+            <br><span class="muted">${d.pointsCredited ? '✅ 已到账' : d.pointsWithheld ? '⏸ 暂扣待核查' : '⏳ 未到账'}</span></td>
+        <td style="max-width:260px"><div class="tip">${esc(d.violationTip)}</div></td>
+        <td>${(d.aiVerdict === 'MIS_SORT' || d.aiVerdict === 'SUSPECTED')
+            ? `<button class="btn sm ghost" onclick='appeal("${esc(d.bizNo)}")'>申诉误判</button>` : '—'}</td>
+      </tr>`).join('') || '<tr><td colspan="7" class="muted">暂无投放记录</td></tr>'}`;
+  document.getElementById('undoneCount').textContent = list.filter(d => d.pointsWithheld || !d.pointsCredited).length;
+}
+
+async function appeal(bizNo) {
+  const reason = prompt('请描述申诉理由（摄像头误判的依据）：');
+  if (!reason) return;
+  try {
+    await api('/resident/appeals', { method: 'POST', body: JSON.stringify({ bizNo, reason }) });
+    toast('申诉已提交，等待物业核查');
+    loadAll();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function loadLedger() {
+  const p = await api('/resident/points');
+  document.getElementById('ledgerTable').innerHTML = `
+    <tr><th>时间</th><th>类型</th><th>积分</th><th>关联投放/原因</th></tr>
+    ${p.ledger.map(l => `<tr>
+      <td class="muted">${fmt(l.createdAt)}</td>
+      <td>${esc(l.directionLabel)}</td>
+      <td style="color:${l.points >= 0 ? 'var(--green-dark)' : 'var(--danger)'}">${l.points > 0 ? '+' : ''}${l.points}</td>
+      <td><code class="bizno">${esc(l.disposalBizNo || '')}</code><br><span class="muted">${esc(l.reason)}</span></td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">暂无积分流水</td></tr>'}`;
+}
+
+async function loadComplaints() {
+  const list = await api('/resident/complaints');
+  document.getElementById('complaintTable').innerHTML = `
+    <tr><th>单号/时间</th><th>类型</th><th>内容</th><th>状态/处理</th></tr>
+    ${list.map(c => `<tr>
+      <td><code class="bizno">${esc(c.complaintNo)}</code><br><span class="muted">${fmt(c.createdAt)}</span></td>
+      <td>${esc(c.typeLabel)}</td>
+      <td>${esc(c.content)}</td>
+      <td><span class="tag ${c.status}">${esc(c.statusLabel)}</span>
+          ${c.cleaningTaskNo ? `<div class="muted">消杀任务 ${esc(c.cleaningTaskNo)}</div>` : ''}
+          <div class="muted">${esc(c.handleNote || '')}</div></td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">暂无投诉</td></tr>'}`;
+}
+
+async function loadRectifications() {
+  const list = await api('/resident/rectifications');
+  document.getElementById('rectTable').innerHTML = `
+    <tr><th>单号/时间</th><th>类型</th><th>投放</th><th>核查结论</th></tr>
+    ${list.map(r => `<tr>
+      <td><code class="bizno">${esc(r.rectifyNo)}</code><br><span class="muted">${fmt(r.createdAt)}</span></td>
+      <td>${r.kind === 'APPEAL' ? '误判申诉' : '违规整改'}</td>
+      <td>${esc(r.wasteTypeLabel)} ${r.weightKg}kg<br><span class="muted">${esc(r.aiVerdictLabel)}${r.appealReason ? ' · ' + esc(r.appealReason) : ''}</span></td>
+      <td><span class="tag ${r.result}">${esc(r.resultLabel)}</span>
+          <div class="muted">${esc(r.reviewNote || '待物业核查')}</div></td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">暂无整改 / 申诉</td></tr>'}`;
+}
+
+document.getElementById('disposeForm').onsubmit = async e => {
+  e.preventDefault();
+  const body = {
+    roomCode: roomCode.value,
+    accessMethod: accessMethod.value,
+    wasteType: wasteType.value,
+    weightKg: Number(weightKg.value),
+    aiVerdict: aiVerdict.value,
+    creditDelayed: document.getElementById('creditDelayed').checked
+  };
+  try {
+    const d = await api('/resident/disposals', { method: 'POST', body: JSON.stringify(body) });
+    document.getElementById('disposeResult').innerHTML = `<div class="tip" style="margin-top:12px">
+      投放单号 <code>${esc(d.bizNo)}</code>：${esc(d.violationTip)}</div>`;
+    toast('投放已记录');
+    loadAll();
+  } catch (err) { toast(err.message, true); }
+};
+
+document.getElementById('complaintForm').onsubmit = async e => {
+  e.preventDefault();
+  try {
+    await api('/resident/complaints', { method: 'POST', body: JSON.stringify({
+      roomCode: document.getElementById('cRoomCode').value,
+      type: document.getElementById('complaintType').value,
+      content: document.getElementById('complaintContent').value.trim()
+    }) });
+    document.getElementById('complaintContent').value = '';
+    toast('投诉已提交，物业消杀任务已联动生成');
+    loadAll();
+  } catch (err) { toast(err.message, true); }
+};
+
+function loadAll() { loadMe(); loadDisposals(); loadLedger(); loadComplaints(); loadRectifications(); }
+loadRooms().then(loadAll);
+setInterval(() => { loadMe(); loadDisposals(); loadLedger(); }, 15000);
+</script>
+</body>
+</html>

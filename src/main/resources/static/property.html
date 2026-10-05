@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>物业端 · 保洁消杀联动工作台</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main>
+  <div class="grid cols-3" id="statCards"></div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>📟 设备事件模拟器（垃圾房设备网关上报）</h2>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <label class="fld" style="margin:0;min-width:230px">垃圾房
+        <select id="simRoom"></select>
+      </label>
+      <button class="btn sm danger" onclick="dev('KITCHEN_FULL',95)">厨余桶满溢 95%</button>
+      <button class="btn sm" onclick="dev('CAPACITY',40,'KITCHEN')">厨余容量降到 40%</button>
+      <button class="btn sm danger" onclick="dev('CAPACITY',93,'OTHER')">其他垃圾 93%</button>
+      <button class="btn sm warn" onclick="dev('ODOR',78)">异味 78（越限）</button>
+      <button class="btn sm ghost" onclick="dev('ODOR',20)">异味回落到 20</button>
+      <button class="btn sm info" onclick="dev('TRUCK_ARRIVAL',null,null,'{&quot;arrived&quot;:true}')">清运车到场</button>
+      <button class="btn sm ghost" onclick="dev('TRUCK_ARRIVAL',null,null,'{&quot;arrived&quot;:false}')">清运车离场</button>
+      <button class="btn sm purple" onclick="dev('DISINFECT',null,null,'COMPLETE')">消杀完成</button>
+      <button class="btn sm ghost" onclick="dev('HEARTBEAT',1)">设备心跳</button>
+    </div>
+    <p class="muted" style="margin:8px 0 0">满溢+异味会在同一垃圾房上同时生成清运与消杀任务；满溢后清运车超时未到将由巡检升级（管理端可手动触发巡检）。</p>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>🧹 待处理任务（保洁 / 消杀 / 设备维修 / 夜间巡查 / 清运后清洁）</h2>
+    <div style="overflow-x:auto"><table id="taskTable"></table></div>
+  </div>
+
+  <div class="grid cols-2" style="margin-top:16px">
+    <div class="card">
+      <h2>📣 投诉工单（异味投诉自动派消杀）</h2>
+      <div style="overflow-x:auto"><table id="complaintTable"></table></div>
+    </div>
+    <div class="card">
+      <h2>⚖️ 整改 / 申诉核查（结论驱动积分返还或没收）</h2>
+      <div style="overflow-x:auto"><table id="rectTable"></table></div>
+    </div>
+  </div>
+
+  <div class="grid cols-2" style="margin-top:16px">
+    <div class="card">
+      <h2>🏠 垃圾房实时状态（四端同源）</h2>
+      <div style="overflow-x:auto"><table id="roomTable"></table></div>
+    </div>
+    <div class="card">
+      <h2>🔗 联动留痕</h2>
+      <div id="logs" style="max-height:360px;overflow:auto;font-size:12px"></div>
+    </div>
+  </div>
+</main>
+
+<script src="/common.js"></script>
+<script>
+const session = requireRole('PROPERTY');
+mountTopbar('物业端 · 保洁消杀联动工作台');
+let roomsCache = [];
+const KIND_LABEL = {
+  CLEANING: '保洁', DISINFECT: '消杀除臭', DEVICE_REPAIR: '设备维修',
+  NIGHT_PATROL: '夜间巡查', POST_PICKUP_CLEAN: '清运后清洁'
+};
+
+async function dev(type, value, wasteType, payload) {
+  try {
+    await api('/devices/events', { method: 'POST', body: JSON.stringify({
+      roomCode: document.getElementById('simRoom').value, eventType: type,
+      numericValue: value, wasteType, payload
+    }) });
+    toast('设备事件已上报：' + type);
+    loadAll();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function loadRooms() {
+  roomsCache = await api('/property/rooms');
+  document.getElementById('simRoom').innerHTML =
+    roomsCache.map(r => `<option value="${r.code}">${r.code} ${esc(r.name)}</option>`).join('');
+  document.getElementById('roomTable').innerHTML = `
+    <tr><th>垃圾房</th><th>综合状态</th><th>厨余桶</th><th>其他桶</th><th>异味</th><th>清运车/在线</th></tr>
+    ${roomsCache.map(r => `<tr>
+      <td>${esc(r.code)}<br><span class="muted">${esc(r.communityName)}</span></td>
+      <td>${stateTag(r.state, r.stateLabel)}${r.nightPeak ? '<br><span class="tag night_peak">夜间高峰</span>' : ''}</td>
+      <td>${fillBar(r.kitchenFillPct)}${r.kitchenFullSince ? '<div class="muted">满溢始于 '+fmt(r.kitchenFullSince)+'</div>' : ''}</td>
+      <td>${fillBar(r.otherFillPct)}</td>
+      <td><b style="color:${r.odorLevel>=60?'var(--danger)':'inherit'}">${r.odorLevel}</b></td>
+      <td>${r.truckOnSite ? '<span class="tag normal">清运车在场</span>' : '<span class="muted">未到场</span>'}
+          <br>${r.online ? '<span class="tag normal">在线</span>' : '<span class="tag offline">断网</span>'}</td>
+    </tr>`).join('')}`;
+}
+
+async function loadStats() {
+  const [tasks, complaints, rects] = await Promise.all([
+    api('/property/tasks'), api('/property/complaints'), api('/property/rectifications')
+  ]);
+  const overdue = tasks.filter(t => t.status === 'OVERDUE' || t.status === 'ESCALATED').length;
+  document.getElementById('statCards').innerHTML = `
+    <div class="card stat"><span class="num">${tasks.length}</span><span class="lbl">待处理治理任务</span></div>
+    <div class="card stat"><span class="num" style="color:${overdue?'var(--danger)':'inherit'}">${overdue}</span><span class="lbl">超时 / 已升级</span></div>
+    <div class="card stat"><span class="num">${rects.filter(r => r.result === 'PENDING').length}</span><span class="lbl">待核查整改/申诉</span></div>`;
+}
+
+async function loadTasks() {
+  const tasks = await api('/property/tasks');
+  document.getElementById('taskTable').innerHTML = `
+    <tr><th>任务号/时间</th><th>垃圾房</th><th>类型/原因</th><th>时限</th><th>状态</th><th>处理人</th><th>操作</th></tr>
+    ${tasks.map(t => `<tr>
+      <td><code class="bizno">${esc(t.taskNo)}</code><br><span class="muted">${fmt(t.createdAt)}</span></td>
+      <td>${esc(t.roomCode)}<br><span class="muted">${esc(t.roomName)}</span></td>
+      <td><b>${KIND_LABEL[t.taskKind] || t.taskKind}</b><div class="muted">${esc(t.reason)}</div></td>
+      <td class="muted">${fmt(t.expectedBefore)}${t.escalated ? '<br><span class="tag ESCALATED">已升级</span>' : ''}</td>
+      <td><span class="tag ${t.status}">${esc(t.statusLabel)}</span></td>
+      <td>${esc(t.assignee || '—')}</td>
+      <td style="white-space:nowrap">
+        ${t.status === 'PENDING' ? `<button class="btn sm info" onclick="assignTask(${t.id})">派单</button>` : ''}
+        ${t.status !== 'DONE' ? `<button class="btn sm" onclick="completeTask(${t.id})">完成</button>` : esc(t.resultNote || '')}
+      </td>
+    </tr>`).join('') || '<tr><td colspan="7" class="muted">暂无待处理任务</td></tr>'}`;
+}
+
+async function assignTask(id) {
+  const assignee = prompt('指派给保洁人员姓名：', '保洁员-赵阿姨');
+  if (!assignee) return;
+  await api(`/property/tasks/${id}/assign`, { method: 'POST', body: JSON.stringify({ assignee }) });
+  toast('已派单'); loadAll();
+}
+async function completeTask(id) {
+  const note = prompt('处理结果备注：', '已完成现场保洁/消杀，异味消除');
+  if (!note) return;
+  await api(`/property/tasks/${id}/complete`, { method: 'POST', body: JSON.stringify({ note }) });
+  toast('任务已完成，关联投诉/状态同步联动'); loadAll();
+}
+
+async function loadComplaints() {
+  const list = await api('/property/complaints');
+  document.getElementById('complaintTable').innerHTML = `
+    <tr><th>单号/时间</th><th>垃圾房</th><th>投诉</th><th>状态</th></tr>
+    ${list.map(c => `<tr>
+      <td><code class="bizno">${esc(c.complaintNo)}</code><br><span class="muted">${fmt(c.createdAt)}</span></td>
+      <td>${esc(c.roomCode)}<br><span class="muted">${esc(c.residentName)}</span></td>
+      <td><b>${esc(c.typeLabel)}</b><div class="muted">${esc(c.content)}</div></td>
+      <td><span class="tag ${c.status}">${esc(c.statusLabel)}</span>
+          <div class="muted">${esc(c.cleaningTaskNo ? '→ 消杀任务 ' + c.cleaningTaskNo : '')}</div></td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">暂无投诉</td></tr>'}`;
+}
+
+async function loadRectifications() {
+  const list = await api('/property/rectifications');
+  document.getElementById('rectTable').innerHTML = `
+    <tr><th>单号</th><th>居民/投放</th><th>类型与理由</th><th>核查</th></tr>
+    ${list.map(r => `<tr>
+      <td><code class="bizno">${esc(r.rectifyNo)}</code></td>
+      <td>${esc(r.residentName)}<br><span class="muted">${esc(r.wasteTypeLabel)} ${r.weightKg}kg · ${esc(r.aiVerdictLabel)}</span></td>
+      <td>${r.kind === 'APPEAL' ? '摄像头误判申诉' : '违规整改'}<div class="muted">${esc(r.appealReason || '—')}</div>
+          <span class="tag ${r.result}">${esc(r.resultLabel)}</span></td>
+      <td>${r.result === 'PENDING' ? `
+        <button class="btn sm" onclick="review('${esc(r.rectifyNo)}','PASS')">通过/误判撤销</button>
+        <button class="btn sm danger" onclick="review('${esc(r.rectifyNo)}','FAIL')">不合格</button>` : `<div class="muted">${esc(r.reviewer||'')}<br>${esc(r.reviewNote||'')}</div>`}
+      </td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">暂无整改/申诉</td></tr>'}`;
+}
+
+async function review(rectifyNo, result) {
+  const note = prompt('核查备注：', result === 'PASS' ? '现场复核为识别误判，撤销违规' : '复核确认混投，整改不合格');
+  if (!note) return;
+  await api(`/property/rectifications/${rectifyNo}/review`, {
+    method: 'POST', body: JSON.stringify({ result, note })
+  });
+  toast('核查完成，积分已按结论联动处理'); loadAll();
+}
+
+async function loadLogs() {
+  const roomId = roomsCache[0] ? roomsCache[0].id : null;
+  if (!roomId) return;
+  const logs = await api(`/property/rooms/${roomId}/linkage-logs`);
+  document.getElementById('logs').innerHTML = logs.map(l =>
+    `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+      <span class="muted">${fmt(l.createdAt)}</span>
+      <span class="tag normal">${esc(l.linkageType)}</span>
+      <b>${esc(l.action)}</b> ${esc(l.detail)}
+      ${l.refBizNo ? `<code class="bizno">${esc(l.refBizNo)}</code>` : ''}
+    </div>`).join('') || '<p class="muted">暂无联动记录</p>';
+}
+
+function loadAll() { loadStats(); loadTasks(); loadComplaints(); loadRectifications(); loadRooms().then(loadLogs); }
+loadAll();
+setInterval(() => { loadStats(); loadTasks(); loadRooms(); }, 15000);
+</script>
+</body>
+</html>

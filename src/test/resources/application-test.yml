@@ -1,0 +1,29 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:binroom-test;DB_CLOSE_DELAY=-1;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: create-drop
+
+app:
+  eventbus:
+    mode: local
+  sweep:
+    enabled: false
+  linkage:
+    full-threshold-pct: 90
+    odor-threshold: 60
+    night-start-hour: 0
+    night-end-hour: 24
+    night-peak-window-minutes: 30
+    night-peak-count: 3
+    offline-minutes: 60
+    full-escalate-minutes: 0
+    post-pickup-clean-minutes: 0
+    points-credit-timeout-seconds: 0
+    cleaning-timeout-minutes: 60
+    pickup-timeout-minutes: 90

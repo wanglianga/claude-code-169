@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>街道端 · 分类质量与投诉趋势</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main>
+  <div class="grid cols-4" id="statCards" style="grid-template-columns:repeat(4,1fr)"></div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>🏘️ 按小区分类质量（近 7 天）</h2>
+    <div style="overflow-x:auto"><table id="qualityTable"></table></div>
+  </div>
+
+  <div class="grid cols-2" style="margin-top:16px">
+    <div class="card">
+      <h2>📈 投诉总量趋势（近 14 天）</h2>
+      <div id="trendChart" class="chart-bars"></div>
+    </div>
+    <div class="card">
+      <h2>🧩 投诉类型分布</h2>
+      <div id="typeChart"></div>
+      <h3>分类型趋势</h3>
+      <div id="seriesChart"></div>
+    </div>
+  </div>
+
+  <div class="grid cols-2" style="margin-top:16px">
+    <div class="card">
+      <h2>🏠 辖区垃圾房状态总览（四端同一状态源）</h2>
+      <div style="overflow-x:auto"><table id="roomTable"></table></div>
+    </div>
+    <div class="card">
+      <h2>🔗 全街道联动留痕</h2>
+      <div id="logs" style="max-height:380px;overflow:auto;font-size:12px"></div>
+    </div>
+  </div>
+</main>
+
+<script src="/common.js"></script>
+<script>
+const session = requireRoleAny('STREET', 'ADMIN');
+mountTopbar('街道端 · 分类质量与投诉趋势监管');
+
+function requireRoleAny() {
+  const s = getSession();
+  if (!s || !['STREET', 'ADMIN'].includes(s.role)) location.href = '/index.html';
+  return s;
+}
+
+const TYPE_COLOR = { ODOR: '#d68c23', HYGIENE: '#7a5aa6', OVERFLOW: '#d0564b', NOISE: '#2f6fb0', OTHER: '#7f8c8d' };
+
+async function loadQuality() {
+  const q = await api('/street/classification-quality?days=7');
+  document.getElementById('qualityTable').innerHTML = `
+    <tr><th>小区</th><th>投放总次数</th><th>正确</th><th>错投</th><th>疑似</th><th>分类正确率</th><th>厨余重量(kg)</th><th>其他重量(kg)</th><th>已发积分</th><th>违规扣分</th></tr>
+    ${q.map(r => `<tr>
+      <td><b>${esc(r.communityName)}</b></td>
+      <td>${r.total}</td>
+      <td style="color:var(--green-dark)">${r.correct}</td>
+      <td style="color:var(--danger)">${r.misSort}</td>
+      <td style="color:var(--warn)">${r.suspected}</td>
+      <td><b style="color:${r.correctRatePct>=85?'var(--green-dark)':r.correctRatePct>=60?'var(--warn)':'var(--danger)'}">${r.correctRatePct}%</b>
+          ${fillBar(r.correctRatePct)}</td>
+      <td>${r.kitchenWeightKg}</td>
+      <td>${r.otherWeightKg}</td>
+      <td>${r.pointsCredited}</td>
+      <td style="color:var(--danger)">${r.penaltyPoints}</td>
+    </tr>`).join('') || '<tr><td colspan="10" class="muted">近 7 天暂无投放数据</td></tr>'}`;
+}
+
+async function loadTrend() {
+  const t = await api('/street/complaint-trend?days=14');
+  const max = Math.max(1, ...t.totals);
+  document.getElementById('statCards').innerHTML = `
+    <div class="card stat"><span class="num">${t.totalComplaints}</span><span class="lbl">近14天投诉总量</span></div>
+    <div class="card stat"><span class="num" style="color:${t.pendingComplaints?'var(--danger)':'inherit'}">${t.pendingComplaints}</span><span class="lbl">未闭环投诉</span></div>
+    <div class="card stat" id="roomStat"><span class="num">…</span><span class="lbl">异常垃圾房</span></div>
+    <div class="card stat" style="justify-content:center">${session.role === 'ADMIN'
+      ? '<button class="btn warn" onclick="sweep()">立即执行联动巡检</button>'
+      : '<span class="muted">系统每 30 秒自动巡检：断网 / 积分补发 / 超时升级</span>'}</div>`;
+  document.getElementById('trendChart').innerHTML = t.dates.map((d, i) => {
+    const v = t.totals[i];
+    return `<div class="col">
+      <div class="bar" style="height:${Math.max(2, v / max * 140)}px;background:${v>=3?'var(--danger)':'var(--green)'}">
+        <span class="v">${v || ''}</span></div>
+      <span class="xlab">${d.slice(5)}</span></div>`;
+  }).join('');
+
+  const types = Object.entries(t.totalsByType || {});
+  const total = types.reduce((s, [, n]) => s + n, 0) || 1;
+  document.getElementById('typeChart').innerHTML = `
+    <div style="display:flex;height:22px;border-radius:6px;overflow:hidden">
+      ${types.map(([type, n]) => `<div title="${type} ${n}" style="width:${n/total*100}%;background:${TYPE_COLOR[type]||'#999'}"></div>`).join('')}
+    </div>
+    <div class="legend">${types.map(([type, n]) =>
+      `<span><i style="background:${TYPE_COLOR[type]||'#999'}"></i>${type} ${n} 件 (${Math.round(n/total*100)}%)</span>`).join('')}
+    </div>`;
+  document.getElementById('seriesChart').innerHTML = t.series.map(s => `
+    <div style="margin-bottom:8px">
+      <div class="muted">${esc(s.typeLabel)}</div>
+      <div style="display:flex;gap:2px;align-items:flex-end;height:34px">
+        ${s.counts.map(v => `<div title="${v}" style="flex:1;height:${Math.max(2,Math.min(v,5)/5*30)}px;background:${TYPE_COLOR[s.type]||'#999'}"></div>`).join('')}
+      </div>
+    </div>`).join('') || '<p class="muted">暂无投诉</p>';
+}
+
+async function sweep() {
+  try {
+    const r = await api('/admin/sweep', { method: 'POST' });
+    toast(r.result); loadAll();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function loadRooms() {
+  const rooms = await api('/street/rooms');
+  const abnormal = rooms.filter(r => r.state !== 'NORMAL').length;
+  const el = document.getElementById('roomStat');
+  if (el) el.innerHTML = `<span class="num" style="color:${abnormal?'var(--danger)':'inherit'}">${abnormal}</span><span class="lbl">异常垃圾房 / 共 ${rooms.length}</span>`;
+  document.getElementById('roomTable').innerHTML = `
+    <tr><th>垃圾房</th><th>小区</th><th>状态</th><th>厨余/其他</th><th>异味</th><th>清运车</th></tr>
+    ${rooms.map(r => `<tr>
+      <td>${esc(r.code)} ${esc(r.name)}</td>
+      <td>${esc(r.communityName)}</td>
+      <td>${stateTag(r.state, r.stateLabel)}${r.nightPeak?' <span class="tag night_peak">夜间高峰</span>':''}</td>
+      <td style="min-width:140px">${fillBar(r.kitchenFillPct)}${fillBar(r.otherFillPct)}</td>
+      <td><b style="color:${r.odorLevel>=60?'var(--danger)':'inherit'}">${r.odorLevel}</b></td>
+      <td>${r.truckOnSite?'<span class="tag normal">在场</span>':'<span class="muted">未到</span>'}</td>
+    </tr>`).join('')}`;
+}
+
+async function loadLogs() {
+  const logs = await api('/street/linkage-logs');
+  document.getElementById('logs').innerHTML = logs.slice(0, 80).map(l =>
+    `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+      <span class="muted">${fmt(l.createdAt)}</span>
+      <span class="tag normal">${esc(l.linkageType)}</span>
+      <b>${esc(l.action)}</b> ${esc(l.detail)}
+      ${l.refBizNo ? `<code class="bizno">${esc(l.refBizNo)}</code>` : ''}
+    </div>`).join('') || '<p class="muted">暂无联动留痕</p>';
+}
+
+function loadAll() { loadQuality(); loadTrend(); loadRooms().then(loadLogs); }
+loadAll();
+setInterval(loadAll, 20000);
+</script>
+</body>
+</html>

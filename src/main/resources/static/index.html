@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>城市智能垃圾房联动服务 · 登录</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <h1>♻️ 城市智能垃圾房联动服务</h1>
+    <p class="sub">满溢 · 异味 · 错投联动治理（物业 / 环卫 / 街道 / 居民四端协同）</p>
+    <div class="role-tabs" id="roleTabs"></div>
+    <form id="loginForm">
+      <div id="staffFields">
+        <label class="fld">用户名
+          <input id="username" value="property" autocomplete="off">
+        </label>
+        <label class="fld">密码
+          <input id="password" type="password" value="property123">
+        </label>
+      </div>
+      <div id="residentFields" style="display:none">
+        <label class="fld">刷卡 / 扫码卡号
+          <input id="cardNo" value="R1001" autocomplete="off">
+        </label>
+      </div>
+      <button class="btn" style="width:100%" type="submit">登 录</button>
+    </form>
+    <p class="muted" style="margin-top:16px;line-height:1.7">
+      测试账号：居民卡号 R1001～R2001；物业 property/property123；环卫 sanitation/sanitation123；
+      街道 street/street123；管理员 admin/admin123。
+    </p>
+  </div>
+</div>
+<script src="/common.js"></script>
+<script>
+  const ROLES = [
+    { key: 'PROPERTY', label: '物业端', page: 'property.html', user: 'property', pwd: 'property123' },
+    { key: 'SANITATION', label: '环卫端', page: 'sanitation.html', user: 'sanitation', pwd: 'sanitation123' },
+    { key: 'STREET', label: '街道端', page: 'street.html', user: 'street', pwd: 'street123' },
+    { key: 'RESIDENT', label: '居民端', page: 'resident.html' },
+    { key: 'ADMIN', label: '管理端', page: 'street.html', user: 'admin', pwd: 'admin123' }
+  ];
+  let current = 'PROPERTY';
+
+  function renderTabs() {
+    document.getElementById('roleTabs').innerHTML = ROLES.map(r =>
+      `<button type="button" class="${r.key === current ? 'active' : ''}" onclick="pick('${r.key}')">${r.label}</button>`
+    ).join('');
+    const resident = current === 'RESIDENT';
+    document.getElementById('staffFields').style.display = resident ? 'none' : 'block';
+    document.getElementById('residentFields').style.display = resident ? 'block' : 'none';
+  }
+  function pick(key) {
+    current = key;
+    const r = ROLES.find(x => x.key === key);
+    if (r.user) { document.getElementById('username').value = r.user; document.getElementById('password').value = r.pwd; }
+    renderTabs();
+  }
+  document.getElementById('loginForm').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      let session;
+      if (current === 'RESIDENT') {
+        session = await api('/auth/resident/login', {
+          method: 'POST', body: JSON.stringify({ cardNo: document.getElementById('cardNo').value.trim() })
+        });
+      } else {
+        session = await api('/auth/staff/login', {
+          method: 'POST',
+          body: JSON.stringify({
+            username: document.getElementById('username').value.trim(),
+            password: document.getElementById('password').value.trim()
+          })
+        });
+      }
+      session.page = ROLES.find(r => r.key === session.role).page;
+      setSession(session);
+      location.href = session.page;
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+  renderTabs();
+</script>
+</body>
+</html>

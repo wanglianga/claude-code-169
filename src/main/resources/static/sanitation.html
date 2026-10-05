@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>环卫端 · 清运优先级调度</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<main>
+  <div class="grid cols-3" id="statCards"></div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>🚛 清运优先级队列（容量 + 满溢等待 + 异味 + 投诉 + 升级综合评分）</h2>
+    <div style="overflow-x:auto"><table id="pickupTable"></table></div>
+  </div>
+
+  <div class="grid cols-2" style="margin-top:16px">
+    <div class="card">
+      <h2>📊 垃圾房容量总览（环卫排班依据）</h2>
+      <div style="overflow-x:auto"><table id="roomTable"></table></div>
+    </div>
+    <div class="card">
+      <h2>🔗 清运联动留痕</h2>
+      <div id="logs" style="max-height:380px;overflow:auto;font-size:12px"></div>
+    </div>
+  </div>
+</main>
+
+<script src="/common.js"></script>
+<script>
+const session = requireRole('SANITATION');
+mountTopbar('环卫端 · 清运优先级调度');
+let roomsCache = [];
+
+async function loadRooms() {
+  roomsCache = await api('/sanitation/rooms');
+  document.getElementById('roomTable').innerHTML = `
+    <tr><th>垃圾房</th><th>厨余桶</th><th>其他桶</th><th>异味</th><th>状态</th><th>上次清运</th></tr>
+    ${roomsCache.map(r => `<tr>
+      <td>${esc(r.code)}<br><span class="muted">${esc(r.communityName)}</span></td>
+      <td>${fillBar(r.kitchenFillPct)}</td>
+      <td>${fillBar(r.otherFillPct)}</td>
+      <td><b style="color:${r.odorLevel>=60?'var(--danger)':'inherit'}">${r.odorLevel}</b></td>
+      <td>${stateTag(r.state, r.stateLabel)}<br>${r.truckOnSite?'<span class="tag normal">车在场</span>':''}</td>
+      <td class="muted">${fmt(r.lastPickupAt)}</td>
+    </tr>`).join('')}`;
+}
+
+async function loadQueue() {
+  const tasks = await api('/sanitation/pickup-tasks');
+  const escalated = tasks.filter(t => t.escalated).length;
+  document.getElementById('statCards').innerHTML = `
+    <div class="card stat"><span class="num">${tasks.length}</span><span class="lbl">待清运任务</span></div>
+    <div class="card stat"><span class="num" style="color:${escalated?'var(--danger)':'inherit'}">${escalated}</span><span class="lbl">满溢超时/已加急</span></div>
+    <div class="card stat"><span class="num">${tasks.filter(t=>t.status==='IN_PROGRESS').length}</span><span class="lbl">清运车已到场作业中</span></div>`;
+  document.getElementById('pickupTable').innerHTML = `
+    <tr><th>优先级</th><th>任务号</th><th>垃圾房</th><th>类型</th><th>派单原因</th><th>状态</th><th>路线/司机</th><th>操作</th></tr>
+    ${tasks.map((t, i) => `<tr>
+      <td><span class="tag ${i===0?'full':t.priorityScore>=120?'odor':'normal'}" style="font-size:14px">${t.priorityScore} 分</span>
+          <div class="muted">#${i+1}</div></td>
+      <td><code class="bizno">${esc(t.taskNo)}</code><br><span class="muted">${fmt(t.createdAt)}</span></td>
+      <td>${esc(t.roomCode)}<br><span class="muted">${esc(t.roomName)}</span></td>
+      <td><b>${esc(t.wasteTypeLabel)}</b></td>
+      <td style="max-width:240px"><div class="muted">${esc(t.reason)}</div>
+          <div class="muted">要求完成：${fmt(t.expectedBefore)}</div></td>
+      <td><span class="tag ${t.status}">${esc(t.statusLabel)}</span>${t.escalated?'<br><span class="tag ESCALATED">加急</span>':''}</td>
+      <td>${esc(t.routeCode || '—')}<br><span class="muted">${esc(t.assignee || '未派车')}</span></td>
+      <td style="white-space:nowrap">
+        ${t.status === 'PENDING' || t.status === 'OVERDUE' || t.status === 'ESCALATED'
+          ? `<button class="btn sm info" onclick="assignPickup(${t.id})">派车</button>` : ''}
+        ${t.status === 'DISPATCHED' ? `<button class="btn sm warn" onclick="arrive(${t.id})">车辆到场</button>` : ''}
+        ${t.status === 'IN_PROGRESS' ? `<button class="btn sm" onclick="completePickup(${t.id})">完成清运</button>` : ''}
+        ${t.status === 'DONE' ? `<span class="tag DONE">${t.pickedWeightKg}kg</span>` : ''}
+      </td>
+    </tr>`).join('') || '<tr><td colspan="8" class="muted">暂无清运任务，可在物业端模拟满溢事件生成</td></tr>'}`;
+}
+
+async function assignPickup(id) {
+  const assignee = prompt('司机姓名：', '清运司机-老孙');
+  if (!assignee) return;
+  const routeCode = prompt('清运路线：', '滨河-3号线');
+  await api(`/sanitation/pickup-tasks/${id}/assign`, {
+    method: 'POST', body: JSON.stringify({ assignee, routeCode: routeCode || '' })
+  });
+  toast('已派车'); loadAll();
+}
+async function arrive(id) {
+  await api(`/sanitation/pickup-tasks/${id}/arrive`, { method: 'POST' });
+  toast('清运车已到场，满溢等待解除'); loadAll();
+}
+async function completePickup(id) {
+  const w = prompt('本次实际清运重量(kg)：', '180');
+  if (!w) return;
+  await api(`/sanitation/pickup-tasks/${id}/complete`, {
+    method: 'POST', body: JSON.stringify({ pickedWeightKg: Number(w), note: '桶内垃圾全部清运，地磅称重记录已上传' })
+  });
+  toast('清运完成：容量清零，已自动生成清运后清洁任务给物业'); loadAll();
+}
+
+async function loadLogs() {
+  const roomId = roomsCache[0] ? roomsCache[0].id : null;
+  if (!roomId) return;
+  const logs = await api(`/sanitation/rooms/${roomId}/linkage-logs`);
+  document.getElementById('logs').innerHTML = logs.map(l =>
+    `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+      <span class="muted">${fmt(l.createdAt)}</span>
+      <span class="tag normal">${esc(l.linkageType)}</span>
+      <b>${esc(l.action)}</b> ${esc(l.detail)}
+      ${l.refBizNo ? `<code class="bizno">${esc(l.refBizNo)}</code>` : ''}
+    </div>`).join('') || '<p class="muted">暂无联动记录</p>';
+}
+
+function loadAll() { loadQueue(); loadRooms().then(loadLogs); }
+loadAll();
+setInterval(loadAll, 15000);
+</script>
+</body>
+</html>

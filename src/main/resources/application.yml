@@ -1,0 +1,103 @@
+server:
+  port: 8080
+
+spring:
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  application:
+    name: binroom-linkage
+  jpa:
+    open-in-view: true
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: false
+  jackson:
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+app:
+  linkage:
+    # 满溢判定容量百分比
+    full-threshold-pct: 90
+    # 异味告警阈值（传感器 0-100）
+    odor-threshold: 60
+    # 夜间高峰时段
+    night-start-hour: 22
+    night-end-hour: 6
+    # 夜间高峰：该时段内单房投放数窗口（分钟/次数）
+    night-peak-window-minutes: 30
+    night-peak-count: 3
+    # 设备断网判定（分钟无心跳）
+    offline-minutes: 5
+    # 厨余满溢后等待清运车到场升级（分钟）
+    full-escalate-minutes: 15
+    # 清运完成后要求保洁清洁的时限（分钟）
+    post-pickup-clean-minutes: 30
+    # 积分到账超时（秒）
+    points-credit-timeout-seconds: 60
+    # 保洁/清运任务超时（分钟）
+    cleaning-timeout-minutes: 60
+    pickup-timeout-minutes: 90
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:h2:mem:binroom;DB_CLOSE_DELAY=-1;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+app:
+  eventbus:
+    mode: local
+
+---
+spring:
+  config:
+    activate:
+      on-profile: kafka
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:binroom}
+    driver-class-name: org.postgresql.Driver
+    username: ${DB_USER:binroom}
+    password: ${DB_PASSWORD:binroom}
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: binroom-linkage
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.city.binroom.event.*"
+        spring.json.value.default.type: com.city.binroom.event.LinkageMessage
+      enable-auto-commit: false
+    listener:
+      ack-mode: manual_immediate
+
+app:
+  eventbus:
+    mode: kafka
